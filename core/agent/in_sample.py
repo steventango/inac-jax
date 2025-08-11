@@ -1,34 +1,52 @@
-import numpy as np
-from core.agent import base
-from collections import namedtuple
 import os
-import torch
+from functools import partial
 
+import jax
+import jax.numpy as jnp
+import numpy as np
+import optax
+import orbax.checkpoint as ocp
+from flax import nnx
+
+from core.agent import base
+from core.network.network_architectures import (
+    DoubleCriticDiscrete,
+    DoubleCriticNetwork,
+    FCNetwork,
+)
 from core.network.policy_factory import MLPCont, MLPDiscrete
-from core.network.network_architectures import DoubleCriticNetwork, DoubleCriticDiscrete, FCNetwork
+
+
+@nnx.jit
+def polyak_update(new, old, step_size):
+    new_params = nnx.state(new)
+    old_params = nnx.state(old)
+    polyak_params = optax.incremental_update(new_params, old_params, step_size)
+    nnx.update(old, polyak_params)
+
 
 class InSampleAC(base.Agent):
-    def __init__(self,
-                 device,
-                 discrete_control,
-                 state_dim,
-                 action_dim,
-                 hidden_units,
-                 learning_rate,
-                 tau,
-                 polyak,
-                 exp_path,
-                 seed,
-                 env_fn,
-                 timeout,
-                 gamma,
-                 offline_data,
-                 batch_size,
-                 use_target_network,
-                 target_network_update_freq,
-                 evaluation_criteria,
-                 logger
-                 ):
+    def __init__(
+        self,
+        discrete_control,
+        state_dim,
+        action_dim,
+        hidden_units,
+        learning_rate,
+        tau,
+        polyak,
+        exp_path,
+        seed,
+        env_fn,
+        timeout,
+        gamma,
+        offline_data,
+        batch_size,
+        use_target_network,
+        target_network_update_freq,
+        evaluation_criteria,
+        logger,
+    ):
         super(InSampleAC, self).__init__(
             exp_path=exp_path,
             seed=seed,
@@ -41,201 +59,237 @@ class InSampleAC(base.Agent):
             use_target_network=use_target_network,
             target_network_update_freq=target_network_update_freq,
             evaluation_criteria=evaluation_criteria,
-            logger=logger
+            logger=logger,
         )
-        
-        def get_policy_func():
-            if discrete_control:
-                pi = MLPDiscrete(device, state_dim, action_dim, [hidden_units]*2)
-            else:
-                pi = MLPCont(device, state_dim, action_dim, [hidden_units]*2)
-            return pi
 
-        def get_critic_func():
-            if discrete_control:
-                q1q2 = DoubleCriticDiscrete(device, state_dim, [hidden_units]*2, action_dim)
-            else:
-                q1q2 = DoubleCriticNetwork(device, state_dim, action_dim, [hidden_units]*2)
-            return q1q2
-            
-        pi = get_policy_func()
-        q1q2 = get_critic_func()
-        AC = namedtuple('AC', ['q1q2', 'pi'])
-        self.ac = AC(q1q2=q1q2, pi=pi)
-        pi_target = get_policy_func()
-        q1q2_target = get_critic_func()
-        q1q2_target.load_state_dict(q1q2.state_dict())
-        pi_target.load_state_dict(pi.state_dict())
-        ACTarg = namedtuple('ACTarg', ['q1q2', 'pi'])
-        self.ac_targ = ACTarg(q1q2=q1q2_target, pi=pi_target)
-        self.ac_targ.q1q2.load_state_dict(self.ac.q1q2.state_dict())
-        self.ac_targ.pi.load_state_dict(self.ac.pi.state_dict())
-        self.beh_pi = get_policy_func()
-        self.value_net = FCNetwork(device, np.prod(state_dim), [hidden_units]*2, 1)
+        self.rng_key = jax.random.PRNGKey(seed)
 
-        self.pi_optimizer = torch.optim.Adam(list(self.ac.pi.parameters()), learning_rate)
-        self.q_optimizer = torch.optim.Adam(list(self.ac.q1q2.parameters()), learning_rate)
-        self.value_optimizer = torch.optim.Adam(list(self.value_net.parameters()), learning_rate)
-        self.beh_pi_optimizer = torch.optim.Adam(list(self.beh_pi.parameters()), learning_rate)
+        def get_policy_func(rngs):
+            if discrete_control:
+                return MLPDiscrete(state_dim, action_dim, [hidden_units] * 2, rngs=rngs)
+            else:
+                return MLPCont(state_dim, action_dim, [hidden_units] * 2, rngs=rngs)
+
+        def get_critic_func(rngs):
+            if discrete_control:
+                return DoubleCriticDiscrete(
+                    state_dim, [hidden_units] * 2, action_dim, rngs=rngs
+                )
+            else:
+                return DoubleCriticNetwork(
+                    state_dim, action_dim, [hidden_units] * 2, rngs=rngs
+                )
+
+        self.rng_key, pi_key, q_key, beh_pi_key, value_key = jax.random.split(
+            self.rng_key, 5
+        )
+
+        pi_params_key, pi_sample_key = jax.random.split(pi_key)
+        q_params_key, q_sample_key = jax.random.split(q_key)
+        beh_pi_params_key, beh_pi_sample_key = jax.random.split(beh_pi_key)
+        value_params_key, _ = jax.random.split(value_key)
+
+        pi_rngs = nnx.Rngs(params=pi_params_key, sample=pi_sample_key)
+        q_rngs = nnx.Rngs(params=q_params_key, sample=q_sample_key)
+        beh_pi_rngs = nnx.Rngs(params=beh_pi_params_key, sample=beh_pi_sample_key)
+        value_rngs = nnx.Rngs(params=value_params_key)
+
+        self.pi = get_policy_func(pi_rngs)
+        self.q = get_critic_func(q_rngs)
+        self.beh_pi = get_policy_func(beh_pi_rngs)
+        self.value_net = FCNetwork(
+            jnp.prod(state_dim), [hidden_units] * 2, 1, rngs=value_rngs
+        )
+
+        self.pi_target = nnx.clone(self.pi)
+        self.q_target = nnx.clone(self.q)
+
+        self.pi_optimizer = nnx.Optimizer(self.pi, optax.adam(learning_rate))
+        self.q_optimizer = nnx.Optimizer(self.q, optax.adam(learning_rate))
+        self.value_optimizer = nnx.Optimizer(self.value_net, optax.adam(learning_rate))
+        self.beh_pi_optimizer = nnx.Optimizer(self.beh_pi, optax.adam(learning_rate))
+
         self.exp_threshold = 10000
-        if discrete_control:
-            self.get_q_value = self.get_q_value_discrete
-            self.get_q_value_target = self.get_q_value_target_discrete
-        else:
-            self.get_q_value = self.get_q_value_cont
-            self.get_q_value_target = self.get_q_value_target_cont
-
         self.tau = tau
         self.polyak = polyak
         self.fill_offline_data_to_buffer()
         self.offline_param_init()
-        return
 
+        if discrete_control:
+            self.get_q_value = self.get_q_value_discrete
+        else:
+            self.get_q_value = self.get_q_value_cont
 
-    def compute_loss_beh_pi(self, data):
-        """L_{\omega}, learn behavior policy"""
-        states, actions = data['obs'], data['act']
-        beh_log_probs = self.beh_pi.get_logprob(states, actions)
-        beh_loss = -beh_log_probs.mean()
-        return beh_loss, beh_log_probs
-    
-    def compute_loss_value(self, data):
-        """L_{\phi}, learn z for state value, v = tau log z"""
-        states = data['obs']
-        v_phi = self.value_net(states).squeeze(-1)
-        with torch.no_grad():
-            actions, log_probs = self.ac.pi(states)
-            min_Q, _, _ = self.get_q_value_target(states, actions)
-        target = min_Q - self.tau * log_probs
-        value_loss = (0.5 * (v_phi - target) ** 2).mean()
-        return value_loss, v_phi.detach().numpy(), log_probs.detach().numpy()
-    
-    def get_state_value(self, state):
-        with torch.no_grad():
-            value = self.value_net(state).squeeze(-1)
-        return value
+    def get_q_value_discrete(self, q_net, o, a):
+        q1_pi, q2_pi = q_net(o)
+        q1_pi = jnp.take_along_axis(q1_pi, a[:, None], axis=1).squeeze(axis=1)
+        q2_pi = jnp.take_along_axis(q2_pi, a[:, None], axis=1).squeeze(axis=1)
+        q_pi = jnp.minimum(q1_pi, q2_pi)
+        return q_pi, q1_pi, q2_pi
 
-    def compute_loss_q(self, data):
-        states, actions, rewards, next_states, dones = data['obs'], data['act'], data['reward'], data['obs2'], data['done']
-        with torch.no_grad():
-            next_actions, log_probs = self.ac.pi(next_states)
-        min_Q, _, _ = self.get_q_value_target(next_states, next_actions)
-        q_target = rewards + self.gamma * (1 - dones) * (min_Q - self.tau * log_probs)
-    
-        minq, q1, q2 = self.get_q_value(states, actions, with_grad=True)
-    
-        critic1_loss = (0.5 * (q_target - q1) ** 2).mean()
-        critic2_loss = (0.5 * (q_target - q2) ** 2).mean()
-        loss_q = (critic1_loss + critic2_loss) * 0.5
-        q_info = minq.detach().numpy()
-        return loss_q, q_info
+    def get_q_value_cont(self, q_net, o, a):
+        q1_pi, q2_pi = q_net(o, a)
+        q_pi = jnp.minimum(q1_pi, q2_pi)
+        return q_pi.squeeze(-1), q1_pi.squeeze(-1), q2_pi.squeeze(-1)
 
-    def compute_loss_pi(self, data):
-        """L_{\psi}, extract learned policy"""
-        states, actions = data['obs'], data['act']
+    @partial(nnx.jit, static_argnums=(0,))
+    def _update_beta(self, beh_pi, beh_pi_optimizer, data):
+        def loss_fn(pi):
+            log_probs = pi.get_logprob(data["obs"], data["act"])
+            return -log_probs.mean()
 
-        log_probs = self.ac.pi.get_logprob(states, actions)
-        min_Q, _, _ = self.get_q_value(states, actions, with_grad=False)
-        with torch.no_grad():
-            value = self.get_state_value(states)
-            beh_log_prob = self.beh_pi.get_logprob(states, actions)
+        loss, grads = nnx.value_and_grad(loss_fn)(beh_pi)
+        beh_pi_optimizer.update(grads)
+        return loss
 
-        clipped = torch.clip(torch.exp((min_Q - value) / self.tau - beh_log_prob), self.eps, self.exp_threshold)
-        pi_loss = -(clipped * log_probs).mean()
-        return pi_loss, ""
-    
     def update_beta(self, data):
-        loss_beh_pi, _ = self.compute_loss_beh_pi(data)
-        self.beh_pi_optimizer.zero_grad()
-        loss_beh_pi.backward()
-        self.beh_pi_optimizer.step()
-        return loss_beh_pi
+        return self._update_beta(self.beh_pi, self.beh_pi_optimizer, data)
 
-    def update(self, data):
-        loss_beta = self.update_beta(data).item()
-        
-        self.value_optimizer.zero_grad()
-        loss_vs, v_info, logp_info = self.compute_loss_value(data)
-        loss_vs.backward()
-        self.value_optimizer.step()
+    @partial(nnx.jit, static_argnums=(0,))
+    def _update_value(self, value_net, value_optimizer, pi, q_target, data, rngs):
+        def loss_fn(value_net, rngs):
+            v_phi = value_net(data["obs"]).squeeze(-1)
+            actions, log_probs = pi(data["obs"], rngs=rngs)
+            min_Q, _, _ = self.get_q_value(q_target, data["obs"], actions)
+            target = min_Q - self.tau * log_probs
+            value_loss = (0.5 * (v_phi - target) ** 2).mean()
+            return value_loss, (v_phi, log_probs)
 
-        loss_q, qinfo = self.compute_loss_q(data)
-        self.q_optimizer.zero_grad()
-        loss_q.backward()
-        self.q_optimizer.step()
+        (loss, (v_phi, log_probs)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
+            value_net, rngs
+        )
+        value_optimizer.update(grads)
+        return loss, v_phi, log_probs
 
-        loss_pi, _ = self.compute_loss_pi(data)
-        self.pi_optimizer.zero_grad()
-        loss_pi.backward()
-        self.pi_optimizer.step()
-        
-        if self.use_target_network and self.total_steps % self.target_network_update_freq == 0:
-            self.sync_target()
+    def update_value(self, data, rngs):
+        return self._update_value(
+            self.value_net, self.value_optimizer, self.pi, self.q_target, data, rngs
+        )
 
-        return {"beta": loss_beta,
-                "actor": loss_pi.item(),
-                "critic": loss_q.item(),
-                "value": loss_vs.item(),
-                "q_info": qinfo.mean(),
-                "v_info": v_info.mean(),
-                "logp_info": logp_info.mean(),
-                }
+    @partial(nnx.jit, static_argnums=(0,))
+    def _update_q(self, q_net, q_optimizer, pi, q_target, data, rngs):
+        def loss_fn(q_net, rngs):
+            next_actions, log_probs = pi(data["obs2"], rngs=rngs)
+            min_Q, _, _ = self.get_q_value(q_target, data["obs2"], next_actions)
+            q_target_values = data["reward"] + self.gamma * (1 - data["done"]) * (
+                min_Q - self.tau * log_probs
+            )
 
+            min_q, q1, q2 = self.get_q_value(q_net, data["obs"], data["act"])
 
-    def get_q_value_discrete(self, o, a, with_grad=False):
-        if with_grad:
-            q1_pi, q2_pi = self.ac.q1q2(o)
-            q1_pi, q2_pi = q1_pi[np.arange(len(a)), a], q2_pi[np.arange(len(a)), a]
-            q_pi = torch.min(q1_pi, q2_pi)
-        else:
-            with torch.no_grad():
-                q1_pi, q2_pi = self.ac.q1q2(o)
-                q1_pi, q2_pi = q1_pi[np.arange(len(a)), a], q2_pi[np.arange(len(a)), a]
-                q_pi = torch.min(q1_pi, q2_pi)
-        return q_pi.squeeze(-1), q1_pi.squeeze(-1), q2_pi.squeeze(-1)
+            critic1_loss = (0.5 * (q_target_values - q1) ** 2).mean()
+            critic2_loss = (0.5 * (q_target_values - q2) ** 2).mean()
+            loss_q = (critic1_loss + critic2_loss) * 0.5
+            return loss_q, min_q
 
-    def get_q_value_target_discrete(self, o, a):
-        with torch.no_grad():
-            q1_pi, q2_pi = self.ac_targ.q1q2(o)
-            q1_pi, q2_pi = q1_pi[np.arange(len(a)), a], q2_pi[np.arange(len(a)), a]
-            q_pi = torch.min(q1_pi, q2_pi)
-        return q_pi.squeeze(-1), q1_pi.squeeze(-1), q2_pi.squeeze(-1)
+        (loss, q_info), grads = nnx.value_and_grad(loss_fn, has_aux=True)(q_net, rngs)
+        q_optimizer.update(grads)
+        return loss, q_info
 
-    def get_q_value_cont(self, o, a, with_grad=False):
-        if with_grad:
-            q1_pi, q2_pi = self.ac.q1q2(o, a)
-            q_pi = torch.min(q1_pi, q2_pi)
-        else:
-            with torch.no_grad():
-                q1_pi, q2_pi = self.ac.q1q2(o, a)
-                q_pi = torch.min(q1_pi, q2_pi)
-        return q_pi.squeeze(-1), q1_pi.squeeze(-1), q2_pi.squeeze(-1)
+    def update_q(self, data, rngs):
+        return self._update_q(
+            self.q, self.q_optimizer, self.pi, self.q_target, data, rngs
+        )
 
-    def get_q_value_target_cont(self, o, a):
-        with torch.no_grad():
-            q1_pi, q2_pi = self.ac_targ.q1q2(o, a)
-            q_pi = torch.min(q1_pi, q2_pi)
-        return q_pi.squeeze(-1), q1_pi.squeeze(-1), q2_pi.squeeze(-1)
+    @partial(nnx.jit, static_argnums=(0,))
+    def _update_pi(self, pi, pi_optimizer, q, value_net, beh_pi, data):
+        def loss_fn(pi):
+            log_probs = pi.get_logprob(data["obs"], data["act"])
+            min_Q, _, _ = self.get_q_value(q, data["obs"], data["act"])
+            value = value_net(data["obs"]).squeeze(-1)
+            beh_log_prob = beh_pi.get_logprob(data["obs"], data["act"])
+
+            clipped = jnp.clip(
+                jnp.exp((min_Q - value) / self.tau - beh_log_prob),
+                self.eps,
+                self.exp_threshold,
+            )
+            pi_loss = -(clipped * log_probs).mean()
+            return pi_loss
+
+        loss, grads = nnx.value_and_grad(loss_fn)(pi)
+        pi_optimizer.update(grads)
+        return loss
+
+    def update_pi(self, data):
+        return self._update_pi(self.pi, self.pi_optimizer, self.q, self.value_net, self.beh_pi, data)
 
     def sync_target(self):
-        with torch.no_grad():
-            for p, p_targ in zip(self.ac.q1q2.parameters(), self.ac_targ.q1q2.parameters()):
-                p_targ.data.mul_(self.polyak)
-                p_targ.data.add_((1 - self.polyak) * p.data)
-            for p, p_targ in zip(self.ac.pi.parameters(), self.ac_targ.pi.parameters()):
-                p_targ.data.mul_(self.polyak)
-                p_targ.data.add_((1 - self.polyak) * p.data)
+        polyak_update(self.q, self.q_target, 1 - self.polyak)
+        polyak_update(self.pi, self.pi_target, 1 - self.polyak)
+
+    def update(self, data):
+        self.rng_key, value_key, q_key = jax.random.split(self.rng_key, 3)
+        value_rngs = nnx.Rngs(sample=value_key)
+        q_rngs = nnx.Rngs(sample=q_key)
+
+        data = jax.tree_util.tree_map(lambda x: jnp.asarray(x), data)
+        loss_beta = self.update_beta(data).item()
+
+        loss_vs, v_info, logp_info = self.update_value(data, value_rngs)
+        loss_q, qinfo = self.update_q(data, q_rngs)
+        loss_pi = self.update_pi(data)
+
+        if (
+            self.use_target_network
+            and self.total_steps % self.target_network_update_freq == 0
+        ):
+            self.sync_target()
+
+        return {
+            "beta": loss_beta,
+            "actor": loss_pi.item(),
+            "critic": loss_q.item(),
+            "value": loss_vs.item(),
+            "q_info": qinfo.mean().item(),
+            "v_info": v_info.mean().item(),
+            "logp_info": logp_info.mean().item(),
+        }
+
+    def policy(self, o, eval=False):
+        self.rng_key, policy_key = jax.random.split(self.rng_key)
+        policy_rngs = nnx.Rngs(sample=policy_key)
+        o = self.state_normalizer(o)
+        a, _ = self.pi(o, deterministic=eval, rngs=policy_rngs)
+        return np.asarray(a)
+
+    def eval_step(self, state):
+        a = self.policy(state, eval=True)
+        return a
 
     def save(self):
-        parameters_dir = self.parameters_dir
-        path = os.path.join(parameters_dir, "actor_net")
-        torch.save(self.ac.pi.state_dict(), path)
-    
-        path = os.path.join(parameters_dir, "critic_net")
-        torch.save(self.ac.q1q2.state_dict(), path)
-    
-        path = os.path.join(parameters_dir, "vs_net")
-        torch.save(self.value_net.state_dict(), path)
+        _, pi_state = nnx.split(self.pi)
+        _, q_state = nnx.split(self.q)
+        _, value_net_state = nnx.split(self.value_net)
+        _, beh_pi_state = nnx.split(self.beh_pi)
+        _, pi_optimizer_state = nnx.split(self.pi_optimizer)
+        _, q_optimizer_state = nnx.split(self.q_optimizer)
+        _, value_optimizer_state = nnx.split(self.value_optimizer)
+        _, beh_pi_optimizer_state = nnx.split(self.beh_pi_optimizer)
 
+        ckpt = {
+            "pi": pi_state,
+            "q": q_state,
+            "value_net": value_net_state,
+            "beh_pi": beh_pi_state,
+            "pi_optimizer": pi_optimizer_state,
+            "q_optimizer": q_optimizer_state,
+            "value_optimizer": value_optimizer_state,
+            "beh_pi_optimizer": beh_pi_optimizer_state,
+        }
+        with ocp.StandardCheckpointer() as checkpointer:
+            checkpointer.save(
+                os.path.join(self.parameters_dir, "default"), ckpt, force=True
+            )
 
-
+    def load(self):
+        with ocp.StandardCheckpointer() as checkpointer:
+            ckpt = checkpointer.restore(os.path.join(self.parameters_dir, "default"))
+        nnx.merge(self.pi, ckpt["pi"])
+        nnx.merge(self.q, ckpt["q"])
+        nnx.merge(self.value_net, ckpt["value_net"])
+        nnx.merge(self.beh_pi, ckpt["beh_pi"])
+        nnx.merge(self.pi_optimizer, ckpt["pi_optimizer"])
+        nnx.merge(self.q_optimizer, ckpt["q_optimizer"])
+        nnx.merge(self.value_optimizer, ckpt["value_optimizer"])
+        nnx.merge(self.beh_pi_optimizer, ckpt["beh_pi_optimizer"])

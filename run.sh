@@ -1,3 +1,6 @@
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.05
+export JAX_PLATFORMS=cpu
+
 for i in {0..4}
 do
   python run_ac_offline.py --seed $i --env_name Ant --dataset expert --discrete_control 0 --state_dim 111 --action_dim 8 --tau 0.01 --learning_rate 0.0003 --hidden_units 256 --batch_size 256 --timeout 1000 --max_steps 1000000 --log_interval 10000 &
