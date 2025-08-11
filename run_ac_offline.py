@@ -15,7 +15,7 @@ if __name__ == '__main__':
     parser.add_argument('--state_dim', default=1, type=int)
     parser.add_argument('--action_dim', default=1, type=int)
     parser.add_argument('--tau', default=0.1, type=float)
-    
+
     parser.add_argument('--max_steps', default=1000000, type=int)
     parser.add_argument('--log_interval', default=10000, type=int)
     parser.add_argument('--learning_rate', default=3e-4, type=float)
@@ -34,9 +34,9 @@ if __name__ == '__main__':
     torch_utils.set_one_thread()
 
     torch_utils.random_seed(cfg.seed)
-    
+
     project_root = os.path.abspath(os.path.dirname(__file__))
-    exp_path = "data/output/{}/{}/{}/{}_run".format(cfg.env_name, cfg.dataset, cfg.info, cfg.seed)
+    exp_path = "data/PyTorch/output/{}/{}/{}/{}_run".format(cfg.env_name, cfg.dataset, cfg.info, cfg.seed)
     cfg.exp_path = os.path.join(project_root, exp_path)
     torch_utils.ensure_dir(cfg.exp_path)
     cfg.env_fn = environment.EnvFactory.create_env_fn(cfg)
