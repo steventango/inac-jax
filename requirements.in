@@ -4,3 +4,6 @@ git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl
 six
 cython<3
 torch
+matplotlib
+pandas
+seaborn

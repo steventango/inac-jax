@@ -19,6 +19,10 @@ click==8.2.1
     # via d4rl
 cloudpickle==3.1.1
     # via gym
+contourpy==1.3.2
+    # via matplotlib
+cycler==0.12.1
+    # via matplotlib
 cython==0.29.37
     # via
     #   -r requirements.in
@@ -41,6 +45,8 @@ fasteners==0.20
     # via mujoco-py
 filelock==3.18.0
     # via torch
+fonttools==4.59.0
+    # via matplotlib
 fsspec==2025.7.0
     # via
     #   etils
@@ -64,12 +70,18 @@ importlib-resources==6.5.2
     # via etils
 jinja2==3.1.6
     # via torch
+kiwisolver==1.4.9
+    # via matplotlib
 labmaze==1.0.6
     # via dm-control
 lxml==6.0.0
     # via dm-control
 markupsafe==3.0.2
     # via jinja2
+matplotlib==3.10.5
+    # via
+    #   -r requirements.in
+    #   seaborn
 mjrl @ git+https://github.com/aravindr93/mjrl@3871d93763d3b49c4741e6daeaebbc605fe140dc#egg=mjrl
     # via d4rl
 mpmath==1.3.0
@@ -84,6 +96,7 @@ networkx==3.4.2
     # via torch
 numpy==2.2.6
     # via
+    #   contourpy
     #   d4rl
     #   dm-control
     #   dm-env
@@ -92,9 +105,12 @@ numpy==2.2.6
     #   h5py
     #   imageio
     #   labmaze
+    #   matplotlib
     #   mujoco
     #   mujoco-py
+    #   pandas
     #   scipy
+    #   seaborn
 nvidia-cublas-cu12==12.8.4.1
     # via
     #   nvidia-cudnn-cu12
@@ -132,8 +148,16 @@ nvidia-nvjitlink-cu12==12.8.93
     #   torch
 nvidia-nvtx-cu12==12.8.90
     # via torch
+packaging==25.0
+    # via matplotlib
+pandas==2.3.1
+    # via
+    #   -r requirements.in
+    #   seaborn
 pillow==11.3.0
-    # via imageio
+    # via
+    #   imageio
+    #   matplotlib
 protobuf==6.31.1
     # via dm-control
 pybullet==3.2.7
@@ -145,18 +169,30 @@ pyopengl==3.1.9
     #   dm-control
     #   mujoco
 pyparsing==2.4.7
-    # via dm-control
+    # via
+    #   dm-control
+    #   matplotlib
+python-dateutil==2.9.0.post0
+    # via
+    #   matplotlib
+    #   pandas
+pytz==2025.2
+    # via pandas
 requests==2.32.4
     # via dm-control
 scipy==1.15.3
     # via dm-control
+seaborn==0.13.2
+    # via -r requirements.in
 setuptools==80.9.0
     # via
     #   dm-control
     #   labmaze
     #   triton
 six==1.17.0
-    # via -r requirements.in
+    # via
+    #   -r requirements.in
+    #   python-dateutil
 sympy==1.14.0
     # via torch
 termcolor==3.1.0
@@ -171,6 +207,8 @@ typing-extensions==4.14.1
     # via
     #   etils
     #   torch
+tzdata==2025.2
+    # via pandas
 urllib3==2.5.0
     # via requests
 wrapt==1.17.2
