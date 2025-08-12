@@ -25,6 +25,7 @@ charset-normalizer==3.4.3
 chex==0.1.90
     # via
     #   distrax
+    #   flashbax
     #   optax
 click==8.2.1
     # via d4rl
@@ -65,8 +66,12 @@ fasteners==0.20
     # via mujoco-py
 filelock==3.18.0
     # via torch
-flax==0.10.7
+flashbax==0.1.3
     # via -r requirements.in
+flax==0.10.7
+    # via
+    #   -r requirements.in
+    #   flashbax
 fonttools==4.59.0
     # via matplotlib
 fsspec==2025.7.0
@@ -98,6 +103,7 @@ jax==0.6.2
     # via
     #   chex
     #   distrax
+    #   flashbax
     #   flax
     #   optax
     #   orbax-checkpoint
@@ -105,6 +111,7 @@ jaxlib==0.6.2
     # via
     #   chex
     #   distrax
+    #   flashbax
     #   jax
     #   optax
 jinja2==3.1.6
@@ -157,6 +164,7 @@ numpy==2.2.6
     #   dm-control
     #   dm-env
     #   dm-tree
+    #   flashbax
     #   gym
     #   h5py
     #   imageio
@@ -285,6 +293,7 @@ tensorflow-probability==0.25.0
     # via distrax
 tensorstore==0.1.76
     # via
+    #   flashbax
     #   flax
     #   orbax-checkpoint
 termcolor==3.1.0
@@ -303,6 +312,7 @@ typing-extensions==4.14.1
     # via
     #   chex
     #   etils
+    #   flashbax
     #   flax
     #   orbax-checkpoint
     #   torch

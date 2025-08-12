@@ -1,84 +1,33 @@
+import copy
 import os
 
+import flashbax as fbx
+import jax
 import numpy as np
-import pickle
 import torch
-import copy
 
 from core.utils import torch_utils
 
 
-class Replay:
-    def __init__(self, memory_size, batch_size, seed=0):
-        self.rng = np.random.RandomState(seed)
-        self.memory_size = memory_size
-        self.batch_size = batch_size
-        self.data = []
-        self.pos = 0
-    
-    def feed(self, experience):
-        if self.pos >= len(self.data):
-            self.data.append(experience)
-        else:
-            self.data[self.pos] = experience
-        self.pos = (self.pos + 1) % self.memory_size
-    
-    def feed_batch(self, experience):
-        for exp in experience:
-            self.feed(exp)
-    
-    def sample(self, batch_size=None):
-        if batch_size is None:
-            batch_size = self.batch_size
-        sampled_indices = [self.rng.randint(0, len(self.data)) for _ in range(batch_size)]
-        sampled_data = [self.data[ind] for ind in sampled_indices]
-        batch_data = list(map(lambda x: np.asarray(x), zip(*sampled_data)))
-        
-        return batch_data
-    
-    def sample_array(self, batch_size=None):
-        if batch_size is None:
-            batch_size = self.batch_size
-        
-        sampled_indices = [self.rng.randint(0, len(self.data)) for _ in range(batch_size)]
-        sampled_data = [self.data[ind] for ind in sampled_indices]
-        
-        return sampled_data
-    
-    def size(self):
-        return len(self.data)
-    
-    def persist_memory(self, dir):
-        for k in range(len(self.data)):
-            transition = self.data[k]
-            with open(os.path.join(dir, str(k)), "wb") as f:
-                pickle.dump(transition, f)
-    
-    def clear(self):
-        self.data = []
-        self.pos = 0
-    
-    def get_buffer(self):
-        return self.data
-
-
 class Agent:
-    def __init__(self,
-                 exp_path,
-                 seed,
-                 env_fn,
-                 timeout,
-                 gamma,
-                 offline_data,
-                 action_dim,
-                 batch_size,
-                 use_target_network,
-                 target_network_update_freq,
-                 evaluation_criteria,
-                 logger
-                 ):
+    def __init__(
+        self,
+        exp_path,
+        seed,
+        env_fn,
+        timeout,
+        gamma,
+        offline_data,
+        action_dim,
+        batch_size,
+        use_target_network,
+        target_network_update_freq,
+        evaluation_criteria,
+        logger,
+    ):
         self.exp_path = exp_path
         self.seed = seed
+        self.rng_key = jax.random.PRNGKey(seed)
         self.use_target_network = use_target_network
         self.target_network_update_freq = target_network_update_freq
         self.parameters_dir = self.get_parameters_dir()
@@ -87,7 +36,7 @@ class Agent:
         self.env = env_fn()
         self.eval_env = copy.deepcopy(env_fn)()
         self.offline_data = offline_data
-        self.replay = Replay(memory_size=2000000, batch_size=batch_size, seed=seed)
+        self.replay = None
         self.state_normalizer = lambda x: x
         self.evaluation_criteria = evaluation_criteria
         self.logger = logger
@@ -112,7 +61,7 @@ class Agent:
         self.populate_latest = False
         self.populate_states, self.populate_actions, self.populate_true_qs = None, None, None
         self.automatic_tmp_tuning = False
-        
+
         self.state = None
         self.action = None
         self.next_state = None
@@ -133,37 +82,51 @@ class Agent:
         self.tloss_increase = 0
         self.tloss_rec = np.inf
 
-    def get_data(self):
-        states, actions, rewards, next_states, terminals = self.replay.sample()
-        in_ = torch_utils.tensor(self.state_normalizer(states), self.device)
-        r = torch_utils.tensor(rewards, self.device)
-        ns = torch_utils.tensor(self.state_normalizer(next_states), self.device)
-        t = torch_utils.tensor(terminals, self.device)
+    def get_data(self, rng_key):
+        batch = self.replay.sample(self.replay_state, rng_key)
+        states = batch.experience.first["s"]
+        actions = batch.experience.first["a"]
+        rewards = batch.experience.first["r"]
+        next_states = batch.experience.second["s"]
+        terminals = batch.experience.first["t"]
+        in_ = self.state_normalizer(states)
+        ns = self.state_normalizer(next_states)
         data = {
-            'obs': in_,
-            'act': actions,
-            'reward': r,
-            'obs2': ns,
-            'done': t
+            "obs": in_,
+            "act": actions,
+            "reward": rewards,
+            "obs2": ns,
+            "done": terminals,
         }
         return data
 
     def fill_offline_data_to_buffer(self):
         self.trainset = self.training_set_construction(self.offline_data)
         train_s, train_a, train_r, train_ns, train_t = self.trainset
-        for idx in range(len(train_s)):
-            self.replay.feed([train_s[idx], train_a[idx], train_r[idx], train_ns[idx], train_t[idx]])
+        dataset_size = len(train_s)
+        dataset_transitions = {"s": train_s, "a": train_a, "r": train_r, "t": train_t}
+        dummy_transition = jax.tree_util.tree_map(lambda x: x[0], dataset_transitions)
+        self.replay = fbx.make_flat_buffer(
+            max_length=dataset_size * 2,
+            min_length=self.batch_size,
+            sample_batch_size=self.batch_size,
+            add_batch_size=dataset_size,
+        )
+        self.replay_state = self.replay.init(dummy_transition)
+        add_fn = jax.jit(self.replay.add)
+        self.replay_state = add_fn(self.replay_state, dataset_transitions)
 
     def step(self):
         # trans = self.feed_data()
         self.update_stats(0, None)
-        data = self.get_data()
+        self.rng_key, rng_key = jax.random.split(self.rng_key)
+        data = self.get_data(rng_key)
         losses = self.update(data)
         return losses
-    
+
     def update(self, data):
         raise NotImplementedError
-        
+
     def update_stats(self, reward, done):
         self.episode_reward += reward
         self.total_steps += 1
