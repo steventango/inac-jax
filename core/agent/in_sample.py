@@ -142,9 +142,6 @@ class InSampleAC(base.Agent):
         beh_pi_optimizer.update(grads)
         return loss
 
-    def update_beta(self, data):
-        return self._update_beta(self.beh_pi, self.beh_pi_optimizer, data)
-
     @partial(nnx.jit, static_argnums=(0,))
     def _update_value(self, value_net, value_optimizer, pi, q_target, data, rngs):
         def loss_fn(value_net, rngs):
@@ -160,11 +157,6 @@ class InSampleAC(base.Agent):
         )
         value_optimizer.update(grads)
         return loss, v_phi, log_probs
-
-    def update_value(self, data, rngs):
-        return self._update_value(
-            self.value_net, self.value_optimizer, self.pi, self.q_target, data, rngs
-        )
 
     @partial(nnx.jit, static_argnums=(0,))
     def _update_q(self, q_net, q_optimizer, pi, q_target, data, rngs):
@@ -186,11 +178,6 @@ class InSampleAC(base.Agent):
         q_optimizer.update(grads)
         return loss, q_info
 
-    def update_q(self, data, rngs):
-        return self._update_q(
-            self.q, self.q_optimizer, self.pi, self.q_target, data, rngs
-        )
-
     @partial(nnx.jit, static_argnums=(0,))
     def _update_pi(self, pi, pi_optimizer, q, value_net, beh_pi, data):
         def loss_fn(pi):
@@ -211,8 +198,11 @@ class InSampleAC(base.Agent):
         pi_optimizer.update(grads)
         return loss
 
-    def update_pi(self, data):
-        return self._update_pi(self.pi, self.pi_optimizer, self.q, self.value_net, self.beh_pi, data)
+    @partial(nnx.jit, static_argnums=(0, 3))
+    def _policy(self, pi, o, deterministic, rngs):
+        o = self.state_normalizer(o)
+        a, _ = pi(o, deterministic=deterministic, rngs=rngs)
+        return a
 
     def sync_target(self):
         polyak_update(self.q, self.q_target, 1 - self.polyak)
@@ -224,11 +214,20 @@ class InSampleAC(base.Agent):
         q_rngs = nnx.Rngs(sample=q_key)
 
         data = jax.tree_util.tree_map(lambda x: jnp.asarray(x), data)
-        loss_beta = self.update_beta(data).item()
-
-        loss_vs, v_info, logp_info = self.update_value(data, value_rngs)
-        loss_q, qinfo = self.update_q(data, q_rngs)
-        loss_pi = self.update_pi(data)
+        loss_beta, loss_vs, v_info, logp_info, loss_q, qinfo, loss_pi = self._update(
+            self.beh_pi,
+            self.beh_pi_optimizer,
+            self.value_net,
+            self.value_optimizer,
+            self.pi,
+            self.q_target,
+            self.q,
+            self.q_optimizer,
+            self.pi_optimizer,
+            data,
+            value_rngs,
+            q_rngs,
+        )
 
         if (
             self.use_target_network
@@ -237,7 +236,7 @@ class InSampleAC(base.Agent):
             self.sync_target()
 
         return {
-            "beta": loss_beta,
+            "beta": loss_beta.item(),
             "actor": loss_pi.item(),
             "critic": loss_q.item(),
             "value": loss_vs.item(),
@@ -246,14 +245,38 @@ class InSampleAC(base.Agent):
             "logp_info": logp_info.mean().item(),
         }
 
+    @partial(nnx.jit, static_argnums=(0))
+    def _update(
+        self,
+        beh_pi,
+        beh_pi_optimizer,
+        value_net,
+        value_optimizer,
+        pi,
+        q_target,
+        q,
+        q_optimizer,
+        pi_optimizer,
+        data,
+        value_rngs,
+        q_rngs,
+    ):
+        loss_beta = self._update_beta(beh_pi, beh_pi_optimizer, data)
+        loss_vs, v_info, logp_info = self._update_value(
+            value_net, value_optimizer, pi, q_target, data, value_rngs
+        )
+        loss_q, qinfo = self._update_q(q, q_optimizer, pi, q_target, data, q_rngs)
+        loss_pi = self._update_pi(pi, pi_optimizer, q, value_net, beh_pi, data)
+        return loss_beta, loss_vs, v_info, logp_info, loss_q, qinfo, loss_pi
+
     def policy(self, o, eval=False):
         self.rng_key, policy_key = jax.random.split(self.rng_key)
         policy_rngs = nnx.Rngs(sample=policy_key)
-        o = self.state_normalizer(o)
-        a, _ = self.pi(o, deterministic=eval, rngs=policy_rngs)
+        a = self._policy(self.pi, o, deterministic=eval, rngs=policy_rngs)
         return np.asarray(a)
 
-    def eval_step(self, state):
+    def eval_step(self, state: np.ndarray):
+        state = jnp.asarray(state)
         a = self.policy(state, eval=True)
         return a
 
