@@ -23,6 +23,7 @@ def polyak_update(new, old, step_size):
     old_params = nnx.state(old)
     polyak_params = optax.incremental_update(new_params, old_params, step_size)
     nnx.update(old, polyak_params)
+    return old
 
 
 class InSampleAC(base.Agent):
@@ -204,9 +205,29 @@ class InSampleAC(base.Agent):
         a, _ = pi(o, deterministic=deterministic, rngs=rngs)
         return a
 
-    def sync_target(self):
-        polyak_update(self.q, self.q_target, 1 - self.polyak)
-        polyak_update(self.pi, self.pi_target, 1 - self.polyak)
+    @partial(nnx.jit, static_argnums=(0,))
+    def _sync_target(self, pi, pi_target, q, q_target, total_steps):
+        def sync(pi, pi_target, q, q_target):
+            pi_target = polyak_update(pi, pi_target, 1 - self.polyak)
+            q_target = polyak_update(q, q_target, 1 - self.polyak)
+            return pi_target, q_target
+
+        def no_sync(pi, pi_target, q, q_target):
+            return pi_target, q_target
+
+        pi_target, q_target = nnx.cond(
+            jnp.logical_and(
+                self.use_target_network,
+                total_steps % self.target_network_update_freq == 0,
+            ),
+            sync,
+            no_sync,
+            pi,
+            pi_target,
+            q,
+            q_target,
+        )
+        return pi_target, q_target
 
     def update(self, data):
         self.rng_key, value_key, q_key = jax.random.split(self.rng_key, 3)
@@ -214,12 +235,23 @@ class InSampleAC(base.Agent):
         q_rngs = nnx.Rngs(sample=q_key)
 
         data = jax.tree_util.tree_map(lambda x: jnp.asarray(x), data)
-        loss_beta, loss_vs, v_info, logp_info, loss_q, qinfo, loss_pi = self._update(
+        (
+            loss_beta,
+            loss_vs,
+            v_info,
+            logp_info,
+            loss_q,
+            qinfo,
+            loss_pi,
+            self.pi_target,
+            self.q_target,
+        ) = self._update(
             self.beh_pi,
             self.beh_pi_optimizer,
             self.value_net,
             self.value_optimizer,
             self.pi,
+            self.pi_target,
             self.q_target,
             self.q,
             self.q_optimizer,
@@ -227,13 +259,8 @@ class InSampleAC(base.Agent):
             data,
             value_rngs,
             q_rngs,
+            self.total_steps,
         )
-
-        if (
-            self.use_target_network
-            and self.total_steps % self.target_network_update_freq == 0
-        ):
-            self.sync_target()
 
         return {
             "beta": loss_beta.item(),
@@ -245,7 +272,7 @@ class InSampleAC(base.Agent):
             "logp_info": logp_info.mean().item(),
         }
 
-    @partial(nnx.jit, static_argnums=(0))
+    @partial(nnx.jit, static_argnums=(0,))
     def _update(
         self,
         beh_pi,
@@ -253,6 +280,7 @@ class InSampleAC(base.Agent):
         value_net,
         value_optimizer,
         pi,
+        pi_target,
         q_target,
         q,
         q_optimizer,
@@ -260,6 +288,7 @@ class InSampleAC(base.Agent):
         data,
         value_rngs,
         q_rngs,
+        total_steps,
     ):
         loss_beta = self._update_beta(beh_pi, beh_pi_optimizer, data)
         loss_vs, v_info, logp_info = self._update_value(
@@ -267,7 +296,18 @@ class InSampleAC(base.Agent):
         )
         loss_q, qinfo = self._update_q(q, q_optimizer, pi, q_target, data, q_rngs)
         loss_pi = self._update_pi(pi, pi_optimizer, q, value_net, beh_pi, data)
-        return loss_beta, loss_vs, v_info, logp_info, loss_q, qinfo, loss_pi
+        pi_target, q_target = self._sync_target(pi, pi_target, q, q_target, total_steps)
+        return (
+            loss_beta,
+            loss_vs,
+            v_info,
+            logp_info,
+            loss_q,
+            qinfo,
+            loss_pi,
+            pi_target,
+            q_target,
+        )
 
     def policy(self, o, eval=False):
         self.rng_key, policy_key = jax.random.split(self.rng_key)
