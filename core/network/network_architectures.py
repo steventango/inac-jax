@@ -111,3 +111,17 @@ class DoubleCriticNetwork(nnx.Module):
         q2 = self.head2(self.body2(xu))
 
         return q1, q2
+
+
+def get_q_value_cont(q_net: nnx.Module, o, a):
+    q1_pi, q2_pi = q_net(o, a)
+    q_pi = jnp.minimum(q1_pi, q2_pi)
+    return q_pi.squeeze(-1), q1_pi.squeeze(-1), q2_pi.squeeze(-1)
+
+
+def get_q_value_discrete(q_net: nnx.Module, o, a):
+    q1_pi, q2_pi = q_net(o)
+    q1_pi = jnp.take_along_axis(q1_pi, a[:, None], axis=1).squeeze(axis=1)
+    q2_pi = jnp.take_along_axis(q2_pi, a[:, None], axis=1).squeeze(axis=1)
+    q_pi = jnp.minimum(q1_pi, q2_pi)
+    return q_pi, q1_pi, q2_pi

@@ -1,5 +1,5 @@
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.05
-export JAX_PLATFORMS=cpu
+unset JAX_PLATFORMS
 
 for i in {0..4}
 do

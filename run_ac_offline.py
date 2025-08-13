@@ -1,9 +1,11 @@
 import argparse
 import os
+from pathlib import Path
+
 import numpy as np
 
 import core.environment.env_factory as environment
-from core.agent.in_sample import InSampleAC
+from core.agent.in_sample import train
 from core.utils import logger, run_funcs
 
 if __name__ == '__main__':
@@ -44,7 +46,7 @@ if __name__ == '__main__':
     logger.log_config(cfg)
 
     # Initializing the agent and running the experiment
-    agent_obj = InSampleAC(
+    train(
         discrete_control=cfg.discrete_control,
         state_dim=cfg.state_dim,
         action_dim=cfg.action_dim,
@@ -52,7 +54,7 @@ if __name__ == '__main__':
         learning_rate=cfg.learning_rate,
         tau=cfg.tau,
         polyak=cfg.polyak,
-        exp_path=cfg.exp_path,
+        exp_path=Path(cfg.exp_path),
         seed=cfg.seed,
         env_fn=cfg.env_fn,
         timeout=cfg.timeout,
@@ -61,7 +63,7 @@ if __name__ == '__main__':
         batch_size=cfg.batch_size,
         use_target_network=cfg.use_target_network,
         target_network_update_freq=cfg.target_network_update_freq,
-        evaluation_criteria=cfg.evaluation_criteria,
-        logger=cfg.logger
+        logger=cfg.logger,
+        max_steps=cfg.max_steps,
+        log_interval=cfg.log_interval,
     )
-    run_funcs.run_steps(agent_obj, cfg.max_steps, cfg.log_interval, exp_path)
