@@ -10,15 +10,15 @@ from flax import nnx
 
 
 def fill_offline_data_to_buffer(offline_data, batch_size: int):
-    offline_data = next(offline_data.values())
+    offline_data = next(iter(offline_data.values()))
     train_s = offline_data["states"]
     train_a = offline_data["actions"]
     train_r = offline_data["rewards"]
     train_t = offline_data["terminations"]
 
-        dataset_size = len(train_s)
-        dataset_transitions = {"s": train_s, "a": train_a, "r": train_r, "t": train_t}
-        dummy_transition = jax.tree_util.tree_map(lambda x: x[0], dataset_transitions)
+    dataset_size = len(train_s)
+    dataset_transitions = {"s": train_s, "a": train_a, "r": train_r, "t": train_t}
+    dummy_transition = jax.tree_util.tree_map(lambda x: x[0], dataset_transitions)
     replay = fbx.make_flat_buffer(
             max_length=dataset_size * 2,
         min_length=batch_size,
@@ -41,16 +41,16 @@ def populate_returns(eval_env, _policy, pi, timeout: int, total_ep, rngs: nnx.Rn
 
 def eval_episode(eval_env, _policy, pi, timeout: int, rngs):
     state = eval_env.reset()
-        total_rewards = 0
-        ep_steps = 0
-        done = False
-        while True:
+    total_rewards = 0
+    ep_steps = 0
+    done = False
+    while True:
         action = eval_step(_policy, pi, state, rngs=rngs)
         state, reward, done, _ = eval_env.step([action])
-            total_rewards += reward
-            ep_steps += 1
+        total_rewards += reward
+        ep_steps += 1
         if done or ep_steps == timeout:
-                break
+            break
 
     return total_rewards
 
@@ -67,7 +67,7 @@ def log_return(logger, total_steps, returns, name, elapsed_time):
         f"{name} LOG: steps {total_steps}, episodes {total_episodes:3d}, "
         f"returns {mean:.2f}/{median:.2f}/{min_:.2f}/{max_:.2f}/{len(returns)} (mean/median/min/max/num), {elapsed_time:.2f} steps/s"
     )
-        return mean, median, min_, max_
+    return mean, median, min_, max_
 
 def evaluate(logger, total_steps, eval_env, _policy, pi, timeout, total_ep, rngs):
     t0 = time.time()
@@ -86,7 +86,7 @@ def evaluate(logger, total_steps, eval_env, _policy, pi, timeout, total_ep, rngs
     mean, median, min_, max_ = log_return(
         logger, total_steps, normalized, "Normalized", elapsed_time
     )
-        return mean, median, min_, max_
+    return mean, median, min_, max_
 
 def eval_step(_policy, pi, state: np.ndarray, rngs: nnx.Rngs):
     state = jnp.asarray(state)
