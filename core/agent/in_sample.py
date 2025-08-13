@@ -15,8 +15,6 @@ from core.network.network_architectures import (
     DoubleCriticDiscrete,
     DoubleCriticNetwork,
     FCNetwork,
-    get_q_value_cont,
-    get_q_value_discrete,
 )
 from core.network.policy_factory import MLPCont, MLPDiscrete
 
@@ -47,14 +45,12 @@ class ActorCritic(nnx.Module):
             self.q = DoubleCriticDiscrete(
                 state_dim, [hidden_units] * 2, action_dim, rngs=rngs
             )
-            self.q.get_q_value = get_q_value_discrete
         else:
             self.pi = MLPCont(state_dim, action_dim, [hidden_units] * 2, rngs=rngs)
             self.beh_pi = MLPCont(state_dim, action_dim, [hidden_units] * 2, rngs=rngs)
             self.q = DoubleCriticNetwork(
                 state_dim, action_dim, [hidden_units] * 2, rngs=rngs
             )
-            self.q.get_q_value = get_q_value_cont
         self.value_net = FCNetwork(
             jnp.prod(state_dim), [hidden_units] * 2, 1, rngs=rngs
         )
@@ -98,7 +94,7 @@ def _update_value(value_net, value_optimizer, pi, q_target, tau, data, rngs: nnx
     def loss_fn(value_net, rngs):
         v_phi = value_net(data["obs"]).squeeze(-1)
         actions, log_probs = pi(data["obs"], rngs=rngs)
-        min_Q, _, _ = q_target.get_q_value(q_target, data["obs"], actions)
+        min_Q, _, _ = q_target(data["obs"], actions)
         target = min_Q - tau * log_probs
         value_loss = (0.5 * (v_phi - target) ** 2).mean()
         return value_loss, (v_phi, log_probs)
@@ -123,12 +119,12 @@ def _update_q(
 ):
     def loss_fn(q_net, rngs):
         next_actions, log_probs = pi(data["obs2"], rngs=rngs)
-        min_Q, _, _ = q_target.get_q_value(q_target, data["obs2"], next_actions)
+        min_Q, _, _ = q_target(data["obs2"], next_actions)
         q_target_values = data["reward"] + gamma * (1 - data["done"]) * (
             min_Q - tau * log_probs
         )
 
-        min_q, q1, q2 = q_net.get_q_value(q_net, data["obs"], data["act"])
+        min_q, q1, q2 = q_net(data["obs"], data["act"])
 
         critic1_loss = (0.5 * (q_target_values - q1) ** 2).mean()
         critic2_loss = (0.5 * (q_target_values - q2) ** 2).mean()
@@ -154,7 +150,7 @@ def _update_pi(
 ):
     def loss_fn(pi):
         log_probs = pi.get_logprob(data["obs"], data["act"])
-        min_Q, _, _ = q.get_q_value(q, data["obs"], data["act"])
+        min_Q, _, _ = q(data["obs"], data["act"])
         value = value_net(data["obs"]).squeeze(-1)
         beh_log_prob = beh_pi.get_logprob(data["obs"], data["act"])
 

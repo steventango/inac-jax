@@ -55,10 +55,13 @@ class DoubleCriticDiscrete(nnx.Module):
             input_units, hidden_units, output_units, rngs=rngs
         )
 
-    def __call__(self, x):
+    def __call__(self, x, a):
         q1 = self.q1_net(x)
         q2 = self.q2_net(x)
-        return q1, q2
+        q1 = jnp.take_along_axis(q1, a[:, None], axis=1).squeeze(axis=1)
+        q2 = jnp.take_along_axis(q2, a[:, None], axis=1).squeeze(axis=1)
+        q_pi = jnp.minimum(q1, q2)
+        return q_pi, q1, q2
 
 
 class DoubleCriticNetwork(nnx.Module):
@@ -110,18 +113,5 @@ class DoubleCriticNetwork(nnx.Module):
         q1 = self.head1(self.body1(xu))
         q2 = self.head2(self.body2(xu))
 
-        return q1, q2
-
-
-def get_q_value_cont(q_net: nnx.Module, o, a):
-    q1_pi, q2_pi = q_net(o, a)
-    q_pi = jnp.minimum(q1_pi, q2_pi)
-    return q_pi.squeeze(-1), q1_pi.squeeze(-1), q2_pi.squeeze(-1)
-
-
-def get_q_value_discrete(q_net: nnx.Module, o, a):
-    q1_pi, q2_pi = q_net(o)
-    q1_pi = jnp.take_along_axis(q1_pi, a[:, None], axis=1).squeeze(axis=1)
-    q2_pi = jnp.take_along_axis(q2_pi, a[:, None], axis=1).squeeze(axis=1)
-    q_pi = jnp.minimum(q1_pi, q2_pi)
-    return q_pi, q1_pi, q2_pi
+        q_pi = jnp.minimum(q1, q2)
+        return q_pi.squeeze(-1), q1.squeeze(-1), q2.squeeze(-1)
