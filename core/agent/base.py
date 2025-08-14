@@ -107,14 +107,21 @@ class Agent:
         dataset_transitions = {"s": train_s, "a": train_a, "r": train_r, "t": train_t}
         dummy_transition = jax.tree_util.tree_map(lambda x: x[0], dataset_transitions)
         self.replay = fbx.make_flat_buffer(
-            max_length=dataset_size * 2,
+            max_length=dataset_size,
             min_length=self.batch_size,
             sample_batch_size=self.batch_size,
-            add_batch_size=dataset_size,
         )
         self.replay_state = self.replay.init(dummy_transition)
         add_fn = jax.jit(self.replay.add)
-        self.replay_state = add_fn(self.replay_state, dataset_transitions)
+
+        def add_transition(carry, transition):
+            replay_state = carry
+            replay_state = add_fn(replay_state, transition)
+            return replay_state, None
+
+        self.replay_state, _ = jax.lax.scan(
+            add_transition, self.replay_state, dataset_transitions
+        )
 
     def step(self):
         # trans = self.feed_data()

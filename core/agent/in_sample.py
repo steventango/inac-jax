@@ -236,6 +236,23 @@ class InSampleAC(base.Agent):
         ):
             self.sync_target()
 
+        pi_norm = jnp.sqrt(
+            sum(jnp.sum(x**2) for x in jax.tree_util.tree_leaves(nnx.state(self.pi)))
+        )
+        q_norm = jnp.sqrt(
+            sum(jnp.sum(x**2) for x in jax.tree_util.tree_leaves(nnx.state(self.q)))
+        )
+        value_norm = jnp.sqrt(
+            sum(
+                jnp.sum(x**2)
+                for x in jax.tree_util.tree_leaves(nnx.state(self.value_net))
+            )
+        )
+        beh_pi_norm = jnp.sqrt(
+            sum(
+                jnp.sum(x**2) for x in jax.tree_util.tree_leaves(nnx.state(self.beh_pi))
+            )
+        )
         return {
             "beta": loss_beta,
             "actor": loss_pi.item(),
@@ -244,6 +261,10 @@ class InSampleAC(base.Agent):
             "q_info": qinfo.mean().item(),
             "v_info": v_info.mean().item(),
             "logp_info": logp_info.mean().item(),
+            "pi_norm": pi_norm.item(),
+            "q_norm": q_norm.item(),
+            "value_norm": value_norm.item(),
+            "beh_pi_norm": beh_pi_norm.item(),
         }
 
     def policy(self, o, eval=False):
