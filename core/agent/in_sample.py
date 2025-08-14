@@ -346,7 +346,7 @@ def train(
 
     total_steps = 0
     i = 0
-    evaluations = np.zeros(max_steps // log_interval)
+    evaluations = np.zeros(max_steps // log_interval + 1)
     while True:
         if log_interval and not total_steps % log_interval:
             actor_critic = carry[0]
@@ -363,6 +363,9 @@ def train(
             evaluations[i] = mean
             i += 1
 
+        if total_steps >= max_steps:
+            break
+
         steps = jnp.arange(total_steps, total_steps + log_interval)
 
         t0 = time.time()
@@ -373,8 +376,6 @@ def train(
         logger.info(
             f"TRAIN LOG: steps {total_steps}, {total_steps * 100 // max_steps}%, {elapsed_time:.2f} steps/s"
         )
-        if total_steps >= max_steps:
-            break
 
     np.save(exp_path / "evaluations.npy", np.array(evaluations))
     actor_critic = carry[0]
