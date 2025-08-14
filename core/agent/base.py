@@ -25,7 +25,7 @@ def fill_offline_data_to_buffer(offline_data, batch_size: int):
         sample_batch_size=batch_size,
     )
     replay_state = replay.init(dummy_transition)
-    add_fn = jax.jit(replay.add)
+    add_fn = jax.jit(replay.add, donate_argnums=(0,))
 
     def add_transition(carry, transition):
         replay_state = carry
