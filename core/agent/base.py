@@ -20,14 +20,21 @@ def fill_offline_data_to_buffer(offline_data, batch_size: int):
     dataset_transitions = {"s": train_s, "a": train_a, "r": train_r, "t": train_t}
     dummy_transition = jax.tree_util.tree_map(lambda x: x[0], dataset_transitions)
     replay = fbx.make_flat_buffer(
-            max_length=dataset_size * 2,
+        max_length=dataset_size,
         min_length=batch_size,
         sample_batch_size=batch_size,
-            add_batch_size=dataset_size,
-        )
+    )
     replay_state = replay.init(dummy_transition)
     add_fn = jax.jit(replay.add)
-    replay_state = add_fn(replay_state, dataset_transitions)
+
+    def add_transition(carry, transition):
+        replay_state = carry
+        replay_state = add_fn(replay_state, transition)
+        return replay_state, None
+
+    replay_state, _ = jax.lax.scan(
+        add_transition, replay_state, dataset_transitions
+    )
     return replay, replay_state
 
 
