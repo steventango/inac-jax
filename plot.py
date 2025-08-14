@@ -43,9 +43,17 @@ for path in evaluation_paths:
         "medium": "Medium",
     }.get(dataset, dataset)
     df["y_rolling"] = df["y"].rolling(window=10, min_periods=1).mean()
+    df["alg_seed"] = df["alg"] + " " + df["seed"]
     dfs.append(df)
 
 df = pd.concat(dfs, ignore_index=True)
+
+new_colormap = {
+    f"{k} {seed}": v
+    for k, v in colormap.items()
+    for seed in df["seed"].unique()
+}
+colormap.update(new_colormap)
 
 sns.set_style("darkgrid")
 
