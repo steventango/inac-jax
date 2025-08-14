@@ -17,7 +17,7 @@ def fill_offline_data_to_buffer(offline_data, batch_size: int):
     train_t = offline_data["terminations"]
 
     dataset_size = len(train_s)
-    dataset_transitions = {"s": train_s, "a": train_a, "r": train_r, "t": train_t}
+    dataset_transitions = {"state": train_s, "action": train_a, "reward": train_r, "termination": train_t}
     dummy_transition = jax.tree_util.tree_map(lambda x: x[0], dataset_transitions)
     replay = fbx.make_flat_buffer(
         max_length=dataset_size,

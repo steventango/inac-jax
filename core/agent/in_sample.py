@@ -79,9 +79,11 @@ class Hypers:
 
 
 @nnx.jit
-def _update_beta(beh_pi, beh_pi_optimizer, data):
+def _update_beta(beh_pi, beh_pi_optimizer, batch):
     def loss_fn(pi):
-        log_probs = pi.get_logprob(data["obs"], data["act"])
+        log_probs = pi.get_logprob(
+            batch.experience.first["state"], batch.experience.first["action"]
+        )
         return -log_probs.mean()
 
     loss, grads = nnx.value_and_grad(loss_fn)(beh_pi)
@@ -90,11 +92,11 @@ def _update_beta(beh_pi, beh_pi_optimizer, data):
 
 
 @nnx.jit
-def _update_value(value_net, value_optimizer, pi, q_target, tau, data, rngs: nnx.Rngs):
+def _update_value(value_net, value_optimizer, pi, q_target, tau, batch, rngs: nnx.Rngs):
     def loss_fn(value_net, rngs):
-        v_phi = value_net(data["obs"]).squeeze(-1)
-        actions, log_probs = pi(data["obs"], rngs=rngs)
-        min_Q, _, _ = q_target(data["obs"], actions)
+        v_phi = value_net(batch.experience.first["state"]).squeeze(-1)
+        actions, log_probs = pi(batch.experience.first["state"], rngs=rngs)
+        min_Q, _, _ = q_target(batch.experience.first["state"], actions)
         target = min_Q - tau * log_probs
         value_loss = (0.5 * (v_phi - target) ** 2).mean()
         return value_loss, (v_phi, log_probs)
@@ -114,17 +116,19 @@ def _update_q(
     q_target: nnx.Module,
     gamma: float,
     tau: float,
-    data,
+    batch,
     rngs: nnx.Rngs,
 ):
     def loss_fn(q_net, rngs):
-        next_actions, log_probs = pi(data["obs2"], rngs=rngs)
-        min_Q, _, _ = q_target(data["obs2"], next_actions)
-        q_target_values = data["reward"] + gamma * (1 - data["done"]) * (
-            min_Q - tau * log_probs
-        )
+        next_actions, log_probs = pi(batch.experience.second["state"], rngs=rngs)
+        min_Q, _, _ = q_target(batch.experience.second["state"], next_actions)
+        q_target_values = batch.experience.first["reward"] + gamma * (
+            1 - batch.experience.first["termination"]
+        ) * (min_Q - tau * log_probs)
 
-        min_q, q1, q2 = q_net(data["obs"], data["act"])
+        min_q, q1, q2 = q_net(
+            batch.experience.first["state"], batch.experience.first["action"]
+        )
 
         critic1_loss = (0.5 * (q_target_values - q1) ** 2).mean()
         critic2_loss = (0.5 * (q_target_values - q2) ** 2).mean()
@@ -146,13 +150,19 @@ def _update_pi(
     eps: float,
     exp_threshold: float,
     tau: float,
-    data,
+    batch,
 ):
     def loss_fn(pi):
-        log_probs = pi.get_logprob(data["obs"], data["act"])
-        min_Q, _, _ = q(data["obs"], data["act"])
-        value = value_net(data["obs"]).squeeze(-1)
-        beh_log_prob = beh_pi.get_logprob(data["obs"], data["act"])
+        log_probs = pi.get_logprob(
+            batch.experience.first["state"], batch.experience.first["action"]
+        )
+        min_Q, _, _ = q(
+            batch.experience.first["state"], batch.experience.first["action"]
+        )
+        value = value_net(batch.experience.first["state"]).squeeze(-1)
+        beh_log_prob = beh_pi.get_logprob(
+            batch.experience.first["state"], batch.experience.first["action"]
+        )
 
         clipped = jnp.clip(
             jnp.exp((min_Q - value) / tau - beh_log_prob),
@@ -212,16 +222,16 @@ def _update(
     ac: ActorCritic,
     optimizers: Optimizers,
     hypers: Hypers,
-    data,
+    batch,
     step,
     rngs,
 ):
-    loss_beta = _update_beta(ac.beh_pi, optimizers.beh_pi, data)
+    loss_beta = _update_beta(ac.beh_pi, optimizers.beh_pi, batch)
     loss_vs, v_info, logp_info = _update_value(
-        ac.value_net, optimizers.value, ac.pi, ac.q_target, hypers.tau, data, rngs
+        ac.value_net, optimizers.value, ac.pi, ac.q_target, hypers.tau, batch, rngs
     )
     loss_q, qinfo = _update_q(
-        ac.q, optimizers.q, ac.pi, ac.q_target, hypers.gamma, hypers.tau, data, rngs
+        ac.q, optimizers.q, ac.pi, ac.q_target, hypers.gamma, hypers.tau, batch, rngs
     )
     loss_pi = _update_pi(
         ac.pi,
@@ -232,7 +242,7 @@ def _update(
         hypers.eps,
         hypers.exp_threshold,
         hypers.tau,
-        data,
+        batch,
     )
     _sync_target(
         ac.pi,
@@ -270,20 +280,7 @@ def get_train_func(max_steps: int, replay: fbx.trajectory_buffer.TrajectoryBuffe
     def train_scan(carry: CarryType, step):
         actor_critic, optimizers, replay_state, hypers, rngs = carry
         batch = replay.sample(replay_state, rngs.replay_sample())
-        states = batch.experience.first["s"]
-        actions = batch.experience.first["a"]
-        rewards = batch.experience.first["r"]
-        next_states = batch.experience.second["s"]
-        terminals = batch.experience.first["t"]
-        # TODO: unnecessary double conversion
-        data = {
-            "obs": states,
-            "act": actions,
-            "reward": rewards,
-            "obs2": next_states,
-            "done": terminals,
-        }
-        losses = _update(actor_critic, optimizers, hypers, data, step, rngs)
+        losses = _update(actor_critic, optimizers, hypers, batch, step, rngs)
         return (actor_critic, optimizers, replay_state, hypers, rngs), losses
 
     return train_scan
